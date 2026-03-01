@@ -82,9 +82,9 @@ function provisioning_start() {
     provisioning_get_apt_packages
     provisioning_clone_comfyui
     provisioning_install_base_reqs
-    pip install --no-cache-dir onnxruntime-gpu nvidia-cublas-cu12 nvidia-cudnn-cu12
     provisioning_get_nodes
     provisioning_get_pip_packages
+    pip install --no-cache-dir onnxruntime-gpu nvidia-cublas-cu12 nvidia-cudnn-cu12
 
     provisioning_get_files "${COMFYUI_DIR}/models/checkpoints"         "${CHECKPOINT_MODELS[@]}"
     provisioning_get_files "${COMFYUI_DIR}/models/clip"               "${CLIP_MODELS[@]}"
