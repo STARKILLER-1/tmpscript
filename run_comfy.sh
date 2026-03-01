@@ -44,6 +44,11 @@ DIFFUSION_MODELS=(
     "https://huggingface.co/wdsfdsdf/OFMHUB/resolve/main/WanModel.safetensors"
 )
 
+# SD1.5 нужен для бенчмарка vast.ai serverless (без него воркер вечно Loading)
+CHECKPOINT_MODELS=(
+    "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors"
+)
+
 VAE_MODELS=(
     "https://huggingface.co/wdsfdsdf/OFMHUB/resolve/main/vae.safetensors"
 )
@@ -80,6 +85,7 @@ function provisioning_start() {
     provisioning_get_nodes
     provisioning_get_pip_packages
 
+    provisioning_get_files "${COMFYUI_DIR}/models/checkpoints"         "${CHECKPOINT_MODELS[@]}"
     provisioning_get_files "${COMFYUI_DIR}/models/clip"               "${CLIP_MODELS[@]}"
     provisioning_get_files "${COMFYUI_DIR}/models/clip_vision"        "${CLIP_VISION[@]}"
     provisioning_get_files "${COMFYUI_DIR}/models/text_encoders"      "${TEXT_ENCODERS[@]}"
