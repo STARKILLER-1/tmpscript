@@ -22,7 +22,7 @@ NODES=(
     "https://github.com/kijai/ComfyUI-WanAnimatePreprocess"
     "https://github.com/rgthree/rgthree-comfy"
     "https://github.com/jnxmx/ComfyUI_HuggingFace_Downloader"
-    "https://github.com/teskor-hub/NEW-UTILS.git"
+    "https://github.com/teskor-hub/NEW-UTILS"
 )
 
 # ЗАГРУЗКА ФАЙЛОВ НУЖНЫХ
@@ -165,14 +165,14 @@ function provisioning_get_files() {
 
     for url in "${files[@]}"; do
         echo "→ $url"
-        local auth_header=""
+        local -a wget_args=(-nc --content-disposition --show-progress -e dotbytes=4M -P "$dir")
         if [[ -n "$HF_TOKEN" && "$url" =~ huggingface\.co ]]; then
-            auth_header="--header=Authorization: Bearer $HF_TOKEN"
+            wget_args+=(--header="Authorization: Bearer $HF_TOKEN")
         elif [[ -n "$CIVITAI_TOKEN" && "$url" =~ civitai\.com ]]; then
-            auth_header="--header=Authorization: Bearer $CIVITAI_TOKEN"
+            wget_args+=(--header="Authorization: Bearer $CIVITAI_TOKEN")
         fi
 
-        wget $auth_header -nc --content-disposition --show-progress -e dotbytes=4M -P "$dir" "$url" || echo " [!] Download failed: $url"
+        wget "${wget_args[@]}" "$url" || echo " [!] Download failed: $url"
         echo ""
     done
 }
