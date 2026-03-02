@@ -84,31 +84,53 @@ function provisioning_start() {
     provisioning_install_base_reqs
     provisioning_get_nodes
     provisioning_get_pip_packages
-    pip install --no-cache-dir onnxruntime-gpu nvidia-cublas-cu12 nvidia-cudnn-cu12
+    # ── FIX: onnxruntime CUDA — установка ВСЕХ необходимых библиотек ──
+    # onnxruntime-gpu тянет libcublas, libcufft, libcurand, libcusolver, libcusparse, libcudnn
+    # Без них → fallback на CPU → pose detection 1.5 it/s вместо 100+ it/s
+    pip install --no-cache-dir \
+        onnxruntime-gpu \
+        nvidia-cublas-cu12 \
+        nvidia-cuda-nvrtc-cu12 \
+        nvidia-cuda-runtime-cu12 \
+        nvidia-cudnn-cu12 \
+        nvidia-cufft-cu12 \
+        nvidia-curand-cu12 \
+        nvidia-cusolver-cu12 \
+        nvidia-cusparse-cu12 \
+        nvidia-nccl-cu12 \
+        nvidia-nvjitlink-cu12
 
-    # ── FIX: onnxruntime не находит libcublas.so.12 из pip-пакетов ──
-    # pip ставит .so в site-packages/nvidia/*/lib/, но LD_LIBRARY_PATH не включает этот путь
-    # → onnxruntime fallback на CPU → pose detection 1.5 it/s вместо 100 it/s на 449 кадрах
-    #
-    # Два подхода: symlink (надёжный, переживает перезапуск) + LD_LIBRARY_PATH (на всякий случай)
+    # Собираем все пути из pip-пакетов nvidia и прокидываем в /usr/lib + LD_LIBRARY_PATH
     echo "Fixing CUDA libs for onnxruntime-gpu..."
-    NVIDIA_LIBS="$(python -c 'import nvidia.cublas.lib as l; print(l.__path__[0])' 2>/dev/null || true)"
-    CUDNN_LIBS="$(python -c 'import nvidia.cudnn.lib as l; print(l.__path__[0])' 2>/dev/null || true)"
-    if [[ -n "$NVIDIA_LIBS" ]]; then
-        # Симлинки в /usr/lib — работает независимо от LD_LIBRARY_PATH
-        for lib in "$NVIDIA_LIBS"/libcublas*.so* "$CUDNN_LIBS"/libcudnn*.so*; do
-            if [[ -f "$lib" ]]; then
-                ln -sf "$lib" /usr/lib/ 2>/dev/null || true
+    SITE_PACKAGES="$(python -c 'import site; print(site.getsitepackages()[0])' 2>/dev/null || echo '/venv/main/lib/python3.12/site-packages')"
+    NVIDIA_BASE="${SITE_PACKAGES}/nvidia"
+
+    if [[ -d "$NVIDIA_BASE" ]]; then
+        CUDA_LIB_PATHS=""
+        # Находим ВСЕ lib/ директории внутри nvidia пакетов
+        for libdir in "$NVIDIA_BASE"/*/lib; do
+            if [[ -d "$libdir" ]]; then
+                CUDA_LIB_PATHS="${CUDA_LIB_PATHS:+${CUDA_LIB_PATHS}:}${libdir}"
+                # Симлинки всех .so в /usr/lib
+                for lib in "$libdir"/*.so*; do
+                    if [[ -f "$lib" ]]; then
+                        ln -sf "$lib" /usr/lib/ 2>/dev/null || true
+                    fi
+                done
             fi
         done
         ldconfig 2>/dev/null || true
-
-        # + export на случай если ldconfig не обновился
-        export LD_LIBRARY_PATH="${NVIDIA_LIBS}:${CUDNN_LIBS}:${LD_LIBRARY_PATH:-}"
-        echo "  Symlinked CUDA libs to /usr/lib + LD_LIBRARY_PATH updated"
+        export LD_LIBRARY_PATH="${CUDA_LIB_PATHS}:${LD_LIBRARY_PATH:-}"
+        echo "  CUDA libs symlinked from: ${CUDA_LIB_PATHS}"
     fi
 
-    # Проверка что onnxruntime видит CUDA
+    # Также проверяем системные CUDA пути (vast.ai часто ставит в /usr/local/cuda)
+    if [[ -d "/usr/local/cuda/lib64" ]]; then
+        export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
+        echo "  Added /usr/local/cuda/lib64 to LD_LIBRARY_PATH"
+    fi
+
+    # Проверка
     python -c "
 import onnxruntime as ort
 providers = ort.get_available_providers()
