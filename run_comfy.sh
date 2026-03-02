@@ -71,7 +71,7 @@ LORAS=(
 ### ─────────────────────────────────────────────
 
 function patch_ws_timeout() {
-    local WS_TIMEOUT_NEW=600  # 10 минут вместо 60 сек
+    local WS_TIMEOUT_NEW=900  # 15 минут вместо 60 сек
     local PATCHED=0
 
     echo "[WS-PATCH] Searching for generation_worker.py..."
