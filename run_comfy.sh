@@ -4,8 +4,10 @@ set -e
 # RunPod ComfyUI Blackwell Edition provisioning script
 # Запуск: bash /workspace/run_comfy_runpod.sh
 
-# Активируем venv если есть
-if [[ -f /venv/main/bin/activate ]]; then
+# Активируем venv — RunPod Blackwell image использует .venv-cu128
+if [[ -f /workspace/runpod-slim/ComfyUI/.venv-cu128/bin/activate ]]; then
+    source /workspace/runpod-slim/ComfyUI/.venv-cu128/bin/activate
+elif [[ -f /venv/main/bin/activate ]]; then
     source /venv/main/bin/activate
 elif [[ -f /workspace/venv/bin/activate ]]; then
     source /workspace/venv/bin/activate
@@ -31,7 +33,7 @@ NODES=(
     "https://github.com/kijai/ComfyUI-WanAnimatePreprocess"
     "https://github.com/rgthree/rgthree-comfy"
     "https://github.com/jnxmx/ComfyUI_HuggingFace_Downloader"
-    "https://github.com/teskor-hub/NEW-UTILS"
+    "https://github.com/teskor-hub/comfyui-teskors-utils"
 )
 
 CLIP_MODELS=(
@@ -106,8 +108,10 @@ function provisioning_start() {
 }
 
 function provisioning_clone_comfyui() {
-    # RunPod ComfyUI template ставит в /workspace/ComfyUI или /opt/ComfyUI
-    if [[ -d "/opt/ComfyUI" ]]; then
+    # RunPod Blackwell image: /workspace/runpod-slim/ComfyUI
+    if [[ -d "/workspace/runpod-slim/ComfyUI" ]]; then
+        COMFYUI_DIR="/workspace/runpod-slim/ComfyUI"
+    elif [[ -d "/opt/ComfyUI" ]]; then
         COMFYUI_DIR="/opt/ComfyUI"
     elif [[ -d "/workspace/ComfyUI" ]]; then
         COMFYUI_DIR="/workspace/ComfyUI"
