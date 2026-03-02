@@ -86,6 +86,39 @@ function provisioning_start() {
     provisioning_get_pip_packages
     pip install --no-cache-dir onnxruntime-gpu nvidia-cublas-cu12 nvidia-cudnn-cu12
 
+    # ── FIX: onnxruntime не находит libcublas.so.12 из pip-пакетов ──
+    # pip ставит .so в site-packages/nvidia/*/lib/, но LD_LIBRARY_PATH не включает этот путь
+    # → onnxruntime fallback на CPU → pose detection 1.5 it/s вместо 100 it/s на 449 кадрах
+    #
+    # Два подхода: symlink (надёжный, переживает перезапуск) + LD_LIBRARY_PATH (на всякий случай)
+    echo "Fixing CUDA libs for onnxruntime-gpu..."
+    NVIDIA_LIBS="$(python -c 'import nvidia.cublas.lib as l; print(l.__path__[0])' 2>/dev/null || true)"
+    CUDNN_LIBS="$(python -c 'import nvidia.cudnn.lib as l; print(l.__path__[0])' 2>/dev/null || true)"
+    if [[ -n "$NVIDIA_LIBS" ]]; then
+        # Симлинки в /usr/lib — работает независимо от LD_LIBRARY_PATH
+        for lib in "$NVIDIA_LIBS"/libcublas*.so* "$CUDNN_LIBS"/libcudnn*.so*; do
+            if [[ -f "$lib" ]]; then
+                ln -sf "$lib" /usr/lib/ 2>/dev/null || true
+            fi
+        done
+        ldconfig 2>/dev/null || true
+
+        # + export на случай если ldconfig не обновился
+        export LD_LIBRARY_PATH="${NVIDIA_LIBS}:${CUDNN_LIBS}:${LD_LIBRARY_PATH:-}"
+        echo "  Symlinked CUDA libs to /usr/lib + LD_LIBRARY_PATH updated"
+    fi
+
+    # Проверка что onnxruntime видит CUDA
+    python -c "
+import onnxruntime as ort
+providers = ort.get_available_providers()
+print(f'  onnxruntime providers: {providers}')
+if 'CUDAExecutionProvider' not in providers:
+    print('  WARNING: CUDAExecutionProvider NOT available!')
+else:
+    print('  OK: CUDAExecutionProvider available')
+" 2>&1 || true
+
     provisioning_get_files "${COMFYUI_DIR}/models/checkpoints"         "${CHECKPOINT_MODELS[@]}"
     provisioning_get_files "${COMFYUI_DIR}/models/clip"               "${CLIP_MODELS[@]}"
     provisioning_get_files "${COMFYUI_DIR}/models/clip_vision"        "${CLIP_VISION[@]}"
