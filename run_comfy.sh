@@ -70,6 +70,95 @@ LORAS=(
 ### DO NOT EDIT BELOW UNLESS YOU KNOW WHAT YOU ARE DOING
 ### ─────────────────────────────────────────────
 
+function patch_ws_timeout() {
+    local WS_TIMEOUT_NEW=600  # 10 минут вместо 60 сек
+    local PATCHED=0
+
+    echo "[WS-PATCH] Searching for generation_worker.py..."
+
+    # Ищем generation_worker.py в стандартных путях Docker-образа vastai/comfy
+    local GW=""
+    for search_dir in /workspace/vast-pyworker /workspace /opt /venv; do
+        if [[ -d "$search_dir" ]]; then
+            GW=$(find "$search_dir" -name "generation_worker.py" -path "*/workers/*" 2>/dev/null | head -1)
+            [[ -n "$GW" ]] && break
+        fi
+    done
+
+    if [[ -n "$GW" ]]; then
+        echo "[WS-PATCH] Found: $GW"
+
+        # Показываем текущие timeout-значения для отладки
+        echo "[WS-PATCH] Current timeout values:"
+        grep -n -i "timeout.*60\|60.*timeout\|= *60" "$GW" 2>/dev/null | head -10 || true
+
+        # Патчим: timeout = 60.0 → 600.0, и любые другие 60.0 рядом со словом timeout
+        if grep -q "60\.0" "$GW" 2>/dev/null; then
+            sed -i -E 's/(timeout[^=]*=\s*)60\.0/\1'"$WS_TIMEOUT_NEW"'.0/gi' "$GW"
+            sed -i -E 's/60\.0(\s*seconds)/'"$WS_TIMEOUT_NEW"'.0\1/g' "$GW"
+            # Фолбэк: если есть просто 60.0 как значение по умолчанию
+            sed -i -E "s/,\s*60\.0\s*\)/, ${WS_TIMEOUT_NEW}.0)/g" "$GW"
+            PATCHED=1
+            echo "[WS-PATCH] Patched timeout: 60.0 → ${WS_TIMEOUT_NEW}.0"
+            echo "[WS-PATCH] Updated timeout values:"
+            grep -n -i "timeout\|${WS_TIMEOUT_NEW}" "$GW" 2>/dev/null | head -10 || true
+        else
+            echo "[WS-PATCH] No 60.0 timeout found — may already be patched or different format"
+            grep -n -i "timeout" "$GW" 2>/dev/null | head -10 || true
+        fi
+    else
+        echo "[WS-PATCH] generation_worker.py not found in Docker image"
+        echo "[WS-PATCH] Will try to find and patch at runtime via background task"
+    fi
+
+    # Экспортируем env var — на случай если generation_worker читает из окружения
+    export WS_MESSAGE_TIMEOUT=${WS_TIMEOUT_NEW}
+    export COMFY_WS_TIMEOUT=${WS_TIMEOUT_NEW}
+    export GENERATION_TIMEOUT=${WS_TIMEOUT_NEW}
+
+    # Пишем в /etc/environment чтобы start_server.sh подхватил
+    echo "WS_MESSAGE_TIMEOUT=${WS_TIMEOUT_NEW}" >> /etc/environment 2>/dev/null || true
+    echo "COMFY_WS_TIMEOUT=${WS_TIMEOUT_NEW}" >> /etc/environment 2>/dev/null || true
+    echo "GENERATION_TIMEOUT=${WS_TIMEOUT_NEW}" >> /etc/environment 2>/dev/null || true
+
+    echo "[WS-PATCH] Environment variables set: WS_MESSAGE_TIMEOUT=${WS_TIMEOUT_NEW}"
+
+    # Если файл не найден — запускаем фоновый патчер на случай если он появится позже
+    if [[ $PATCHED -eq 0 ]]; then
+        local _timeout_val=$WS_TIMEOUT_NEW
+        (
+            BG_MAX_WAIT=180
+            BG_INTERVAL=5
+            BG_ELAPSED=0
+            BG_GW=""
+
+            while [[ $BG_ELAPSED -lt $BG_MAX_WAIT ]]; do
+                sleep $BG_INTERVAL
+                BG_ELAPSED=$((BG_ELAPSED + BG_INTERVAL))
+
+                BG_GW=$(find /workspace /opt /venv /tmp -name "generation_worker.py" -path "*/workers/*" 2>/dev/null | head -1)
+                if [[ -n "$BG_GW" ]]; then
+                    echo "[WS-PATCH-BG] Found generation_worker at: $BG_GW"
+                    if grep -q "60\.0" "$BG_GW" 2>/dev/null; then
+                        sed -i -E "s/(timeout[^=]*=\s*)60\.0/\1${_timeout_val}.0/gi" "$BG_GW"
+                        sed -i -E "s/60\.0(\s*seconds)/${_timeout_val}.0\1/g" "$BG_GW"
+                        sed -i -E "s/,\s*60\.0\s*\)/, ${_timeout_val}.0)/g" "$BG_GW"
+                        echo "[WS-PATCH-BG] Patched timeout: 60.0 → ${_timeout_val}.0"
+                    else
+                        echo "[WS-PATCH-BG] No 60.0 timeout found"
+                    fi
+                    break
+                fi
+            done
+
+            if [[ -z "$BG_GW" ]]; then
+                echo "[WS-PATCH-BG] WARNING: generation_worker.py not found after ${BG_MAX_WAIT}s"
+            fi
+        ) &
+        disown
+    fi
+}
+
 function provisioning_start() {
     echo ""
     echo "##############################################"
@@ -78,6 +167,12 @@ function provisioning_start() {
     echo "# бабки бабки                                #"
     echo "##############################################"
     echo ""
+
+    # ── FIX: WebSocket message timeout для generation_worker ──
+    # WanVideo 14B загружает 1427 параметров в VRAM без WebSocket-сообщений
+    # По умолчанию generation_worker ждёт 60 сек → timeout → job killed
+    # Патчим до старта pyworker (start_server.sh пропускает clone если $SERVER_DIR существует)
+    patch_ws_timeout
 
     provisioning_get_apt_packages
     provisioning_clone_comfyui
