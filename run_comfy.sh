@@ -2,9 +2,11 @@
 set -e
 
 # RunPod ComfyUI Blackwell Edition provisioning script
-# Запуск: bash /workspace/run_comfy_runpod.sh
+# Модели → /workspace/models/ (общие для pod и serverless)
+# Симлинки → ComfyUI/models/
+# Запуск: bash /workspace/run_comfy.sh
 
-# Активируем venv — RunPod Blackwell image использует .venv-cu128
+# Активируем venv
 if [[ -f /workspace/runpod-slim/ComfyUI/.venv-cu128/bin/activate ]]; then
     source /workspace/runpod-slim/ComfyUI/.venv-cu128/bin/activate
 elif [[ -f /venv/main/bin/activate ]]; then
@@ -15,6 +17,7 @@ fi
 
 WORKSPACE=${WORKSPACE:-/workspace}
 COMFYUI_DIR="${WORKSPACE}/ComfyUI"
+MODELS_DIR="${WORKSPACE}/models"
 
 echo "=== ComfyUI RunPod Setup (x-mode) ==="
 
@@ -54,7 +57,6 @@ DIFFUSION_MODELS=(
     "https://huggingface.co/wdsfdsdf/OFMHUB/resolve/main/WanModel.safetensors"
 )
 
-# Без SD1.5 — на RunPod не нужен бенчмарк vast.ai
 CHECKPOINT_MODELS=()
 
 VAE_MODELS=(
@@ -86,29 +88,33 @@ function provisioning_start() {
     echo ""
 
     provisioning_get_apt_packages
-    provisioning_clone_comfyui
+    provisioning_find_comfyui
     provisioning_install_base_reqs
     provisioning_get_nodes
     provisioning_get_pip_packages
     provisioning_fix_onnx_cuda
 
-    provisioning_get_files "${COMFYUI_DIR}/models/checkpoints"         "${CHECKPOINT_MODELS[@]}"
-    provisioning_get_files "${COMFYUI_DIR}/models/clip"               "${CLIP_MODELS[@]}"
-    provisioning_get_files "${COMFYUI_DIR}/models/clip_vision"        "${CLIP_VISION[@]}"
-    provisioning_get_files "${COMFYUI_DIR}/models/text_encoders"      "${TEXT_ENCODERS[@]}"
-    provisioning_get_files "${COMFYUI_DIR}/models/vae"                "${VAE_MODELS[@]}"
-    provisioning_get_files "${COMFYUI_DIR}/models/diffusion_models"   "${DIFFUSION_MODELS[@]}"
-    provisioning_get_files "${COMFYUI_DIR}/models/detection"          "${DETECTION_MODELS[@]}"
-    provisioning_get_files "${COMFYUI_DIR}/models/loras"              "${LORAS[@]}"
+    # Модели качаются в /workspace/models/ (общая папка для pod + serverless)
+    provisioning_get_files "${MODELS_DIR}/checkpoints"         "${CHECKPOINT_MODELS[@]}"
+    provisioning_get_files "${MODELS_DIR}/clip"               "${CLIP_MODELS[@]}"
+    provisioning_get_files "${MODELS_DIR}/clip_vision"        "${CLIP_VISION[@]}"
+    provisioning_get_files "${MODELS_DIR}/text_encoders"      "${TEXT_ENCODERS[@]}"
+    provisioning_get_files "${MODELS_DIR}/vae"                "${VAE_MODELS[@]}"
+    provisioning_get_files "${MODELS_DIR}/diffusion_models"   "${DIFFUSION_MODELS[@]}"
+    provisioning_get_files "${MODELS_DIR}/detection"          "${DETECTION_MODELS[@]}"
+    provisioning_get_files "${MODELS_DIR}/loras"              "${LORAS[@]}"
+
+    provisioning_symlink_models
+    provisioning_restart_comfyui
 
     echo ""
     echo "Газик настроил → всё скачано, provisioning complete"
-    echo "Перезапусти ComfyUI: cd ${COMFYUI_DIR} && python main.py --listen 0.0.0.0 --port 8188"
+    echo "Модели: ${MODELS_DIR}/ ($(du -sh ${MODELS_DIR} 2>/dev/null | cut -f1))"
+    echo "ComfyUI: ${COMFYUI_DIR}"
     echo ""
 }
 
-function provisioning_clone_comfyui() {
-    # RunPod Blackwell image: /workspace/runpod-slim/ComfyUI
+function provisioning_find_comfyui() {
     if [[ -d "/workspace/runpod-slim/ComfyUI" ]]; then
         COMFYUI_DIR="/workspace/runpod-slim/ComfyUI"
     elif [[ -d "/opt/ComfyUI" ]]; then
@@ -144,7 +150,6 @@ function provisioning_get_pip_packages() {
 function provisioning_fix_onnx_cuda() {
     echo "Fixing ONNX CUDA provider..."
 
-    # Ставим onnxruntime-gpu ПОСЛЕ нод (чтобы ноды не перезаписали на CPU версию)
     pip install --no-cache-dir --force-reinstall \
         onnxruntime-gpu \
         nvidia-cublas-cu12 \
@@ -158,8 +163,7 @@ function provisioning_fix_onnx_cuda() {
         nvidia-nccl-cu12 \
         nvidia-nvjitlink-cu12
 
-    # Симлинкаем .so из pip пакетов в /usr/lib
-    SITE_PACKAGES="$(python -c 'import site; print(site.getsitepackages()[0])' 2>/dev/null || echo '/venv/main/lib/python3.12/site-packages')"
+    SITE_PACKAGES="$(python3 -c 'import site; print(site.getsitepackages()[0])' 2>/dev/null || echo '/venv/main/lib/python3.12/site-packages')"
     NVIDIA_BASE="${SITE_PACKAGES}/nvidia"
 
     if [[ -d "$NVIDIA_BASE" ]]; then
@@ -179,8 +183,7 @@ function provisioning_fix_onnx_cuda() {
 
     [[ -d "/usr/local/cuda/lib64" ]] && export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
 
-    # Проверка
-    python -c "
+    python3 -c "
 import onnxruntime as ort
 providers = ort.get_available_providers()
 print(f'  onnxruntime providers: {providers}')
@@ -207,12 +210,49 @@ function provisioning_get_nodes() {
             git clone "$repo" "$path" --recursive || echo " [!] Clone failed: $repo"
         fi
 
-        requirements="${path}/requirements.txt"
-        if [[ -f "$requirements" ]]; then
+        if [[ -f "${path}/requirements.txt" ]]; then
             echo "Installing deps for $dir..."
-            pip install --no-cache-dir -r "$requirements" || echo " [!] pip requirements failed for $dir"
+            pip install --no-cache-dir -r "${path}/requirements.txt" || echo " [!] pip failed for $dir"
         fi
     done
+}
+
+function provisioning_symlink_models() {
+    echo "Создаём симлинки: ${MODELS_DIR}/ → ${COMFYUI_DIR}/models/"
+
+    local COMFY_MODELS="${COMFYUI_DIR}/models"
+
+    for dir in "${MODELS_DIR}"/*/; do
+        local name
+        name="$(basename "$dir")"
+        local target="${COMFY_MODELS}/${name}"
+
+        if [[ -L "$target" ]]; then
+            echo "  ✓ $name (симлинк уже есть)"
+            continue
+        fi
+
+        if [[ -d "$target" ]]; then
+            echo "  → $name (мержим файлы)"
+            for file in "$dir"*; do
+                [[ -f "$file" ]] && ln -sf "$file" "$target/" 2>/dev/null || true
+            done
+        else
+            echo "  → $name (симлинк директории)"
+            ln -sf "$dir" "$target"
+        fi
+    done
+
+    echo "  Симлинки готовы."
+}
+
+function provisioning_restart_comfyui() {
+    echo "Перезапускаем ComfyUI..."
+    pkill -f "main.py.*8188" 2>/dev/null || true
+    sleep 2
+    cd "${COMFYUI_DIR}"
+    nohup python3 main.py --listen 0.0.0.0 --port 8188 > /workspace/comfyui.log 2>&1 &
+    echo "ComfyUI запущен на порту 8188 (лог: /workspace/comfyui.log)"
 }
 
 function provisioning_get_files() {
@@ -225,6 +265,12 @@ function provisioning_get_files() {
     echo "Скачивание ${#files[@]} file(s) → $dir..."
 
     for url in "${files[@]}"; do
+        local filename
+        filename="$(basename "$url")"
+        if [[ -f "${dir}/${filename}" ]]; then
+            echo "  ✓ $filename (уже есть)"
+            continue
+        fi
         echo "→ $url"
         local -a wget_args=(-nc --content-disposition --show-progress -e dotbytes=4M -P "$dir")
         if [[ -n "$HF_TOKEN" && "$url" =~ huggingface\.co ]]; then
@@ -232,7 +278,6 @@ function provisioning_get_files() {
         elif [[ -n "$CIVITAI_TOKEN" && "$url" =~ civitai\.com ]]; then
             wget_args+=(--header="Authorization: Bearer $CIVITAI_TOKEN")
         fi
-
         wget "${wget_args[@]}" "$url" || echo " [!] Download failed: $url"
         echo ""
     done
